@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/SigNoz/signoz/ee/licensing/bypasslicensing"
 	"github.com/SigNoz/signoz/ee/query-service/constants"
 	"github.com/SigNoz/signoz/ee/query-service/model"
 	"github.com/SigNoz/signoz/pkg/flagger"
@@ -67,6 +68,14 @@ func (ah *APIHandler) getBilling(w http.ResponseWriter, r *http.Request) {
 
 	if licenseKey == "" {
 		RespondError(w, model.BadRequest(fmt.Errorf("license key is required")), nil)
+		return
+	}
+
+	if licenseKey == bypasslicensing.BypassLicenseKey {
+		ah.Respond(w, billingData{
+			SubscriptionStatus: "self_hosted",
+			Details:            details{Breakdown: []usageResponse{}},
+		})
 		return
 	}
 

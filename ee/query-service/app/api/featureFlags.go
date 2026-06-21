@@ -13,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"github.com/SigNoz/signoz/ee/licensing/bypasslicensing"
 	"github.com/SigNoz/signoz/ee/query-service/constants"
 	"github.com/SigNoz/signoz/pkg/flagger"
 	"github.com/SigNoz/signoz/pkg/http/render"
@@ -45,6 +46,8 @@ func (ah *APIHandler) getFeatureFlags(w http.ResponseWriter, r *http.Request) {
 			slog.ErrorContext(ctx, "failed to fetch license", signozerrors.Attr(err))
 		} else if license == nil {
 			slog.DebugContext(ctx, "no active license found")
+		} else if license.Key == bypasslicensing.BypassLicenseKey {
+			slog.DebugContext(ctx, "skipping zeus features for self-hosted license")
 		} else {
 			licenseKey := license.Key
 

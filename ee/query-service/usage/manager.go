@@ -14,6 +14,7 @@ import (
 	"github.com/go-co-op/gocron"
 	"github.com/google/uuid"
 
+	"github.com/SigNoz/signoz/ee/licensing/bypasslicensing"
 	"github.com/SigNoz/signoz/ee/query-service/model"
 	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/flagger"
@@ -96,6 +97,10 @@ func (lm *Manager) UploadUsage(ctx context.Context) {
 			// we will not start the usage reporting if license is not present.
 			slog.InfoContext(ctx, "no license present, skipping usage reporting")
 			return
+		}
+		if license.Key == bypasslicensing.BypassLicenseKey {
+			slog.DebugContext(ctx, "skipping usage reporting for self-hosted license")
+			continue
 		}
 
 		usages := []model.UsageDB{}

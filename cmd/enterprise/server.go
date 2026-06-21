@@ -15,20 +15,12 @@ import (
 	"github.com/SigNoz/signoz/ee/authz/openfgaauthz"
 	"github.com/SigNoz/signoz/ee/authz/openfgaschema"
 	"github.com/SigNoz/signoz/ee/authz/openfgaserver"
-	"github.com/SigNoz/signoz/ee/gateway/httpgateway"
 	enterpriselicensing "github.com/SigNoz/signoz/ee/licensing"
-	"github.com/SigNoz/signoz/ee/licensing/httplicensing"
-	"github.com/SigNoz/signoz/ee/metercollector/staticmetercollector"
-	"github.com/SigNoz/signoz/ee/metercollector/telemetrymetercollector"
-	"github.com/SigNoz/signoz/ee/meterreporter/httpmeterreporter"
-	"github.com/SigNoz/signoz/ee/modules/cloudintegration/implcloudintegration"
-	"github.com/SigNoz/signoz/ee/modules/cloudintegration/implcloudintegration/implcloudprovider"
+	"github.com/SigNoz/signoz/ee/licensing/bypasslicensing"
 	"github.com/SigNoz/signoz/ee/modules/dashboard/impldashboard"
 	eequerier "github.com/SigNoz/signoz/ee/querier"
 	enterpriseapp "github.com/SigNoz/signoz/ee/query-service/app"
 	eerules "github.com/SigNoz/signoz/ee/query-service/rules"
-	enterprisezeus "github.com/SigNoz/signoz/ee/zeus"
-	"github.com/SigNoz/signoz/ee/zeus/httpzeus"
 	"github.com/SigNoz/signoz/pkg/alertmanager"
 	"github.com/SigNoz/signoz/pkg/analytics"
 	"github.com/SigNoz/signoz/pkg/auditor"
@@ -37,8 +29,9 @@ import (
 	"github.com/SigNoz/signoz/pkg/cache"
 	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/factory"
-	pkgflagger "github.com/SigNoz/signoz/pkg/flagger"
+	"github.com/SigNoz/signoz/pkg/flagger"
 	"github.com/SigNoz/signoz/pkg/gateway"
+	"github.com/SigNoz/signoz/pkg/gateway/noopgateway"
 	"github.com/SigNoz/signoz/pkg/global"
 	"github.com/SigNoz/signoz/pkg/licensing"
 	"github.com/SigNoz/signoz/pkg/meterreporter"
@@ -60,10 +53,10 @@ import (
 	"github.com/SigNoz/signoz/pkg/sqlstore"
 	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	"github.com/SigNoz/signoz/pkg/types/authtypes"
-	"github.com/SigNoz/signoz/pkg/types/cloudintegrationtypes"
 	"github.com/SigNoz/signoz/pkg/types/telemetrytypes"
 	"github.com/SigNoz/signoz/pkg/version"
 	"github.com/SigNoz/signoz/pkg/zeus"
+	"github.com/SigNoz/signoz/pkg/zeus/noopzeus"
 )
 
 func registerServer(parentCmd *cobra.Command, logger *slog.Logger) {
@@ -94,11 +87,11 @@ func runServer(ctx context.Context, config signoz.Config, logger *slog.Logger) e
 	signoz, err := signoz.New(
 		ctx,
 		config,
-		enterprisezeus.Config(),
-		httpzeus.NewProviderFactory(),
+		zeus.Config{},
+		noopzeus.NewProviderFactory(),
 		enterpriselicensing.Config(24*time.Hour, 3),
-		func(sqlstore sqlstore.SQLStore, zeus zeus.Zeus, orgGetter organization.Getter, analytics analytics.Analytics) factory.ProviderFactory[licensing.Licensing, licensing.Config] {
-			return httplicensing.NewProviderFactory(sqlstore, zeus, orgGetter, analytics)
+		func(_ sqlstore.SQLStore, _ zeus.Zeus, _ organization.Getter, _ analytics.Analytics) factory.ProviderFactory[licensing.Licensing, licensing.Config] {
+			return bypasslicensing.NewProviderFactory()
 		},
 		signoz.NewEmailingProviderFactories(),
 		signoz.NewCacheProviderFactories(),
@@ -137,8 +130,8 @@ func runServer(ctx context.Context, config signoz.Config, logger *slog.Logger) e
 		func(store sqlstore.SQLStore, settings factory.ProviderSettings, analytics analytics.Analytics, orgGetter organization.Getter, queryParser queryparser.QueryParser, querier querier.Querier, licensing licensing.Licensing, tagModule tag.Module) dashboard.Module {
 			return impldashboard.NewModule(pkgimpldashboard.NewStore(store), settings, analytics, orgGetter, queryParser, querier, licensing, tagModule)
 		},
-		func(licensing licensing.Licensing) factory.ProviderFactory[gateway.Gateway, gateway.Config] {
-			return httpgateway.NewProviderFactory(licensing)
+		func(_ licensing.Licensing) factory.ProviderFactory[gateway.Gateway, gateway.Config] {
+			return noopgateway.NewProviderFactory()
 		},
 		func(licensing licensing.Licensing) factory.NamedMap[factory.ProviderFactory[auditor.Auditor, auditor.Config]] {
 			factories := signoz.NewAuditorProviderFactories()
@@ -150,37 +143,15 @@ func runServer(ctx context.Context, config signoz.Config, logger *slog.Logger) e
 			}
 			return factories
 		},
-		func(ctx context.Context, providerSettings factory.ProviderSettings, flagger pkgflagger.Flagger, licensing licensing.Licensing, telemetryStore telemetrystore.TelemetryStore, retentionGetter retention.Getter, orgGetter organization.Getter, zeus zeus.Zeus) (factory.NamedMap[factory.ProviderFactory[meterreporter.Reporter, meterreporter.Config]], string) {
-			factories := signoz.NewMeterReporterProviderFactories()
-
-			collectorFactories := factory.MustNewNamedMap(
-				staticmetercollector.NewFactory(),
-				telemetrymetercollector.NewFactory(telemetryStore, retentionGetter),
-			)
-
-			if err := factories.Add(httpmeterreporter.NewFactory(collectorFactories, meterConfigs, flagger, licensing, orgGetter, zeus)); err != nil {
-				panic(err)
-			}
-
-			return factories, "http"
+		func(_ context.Context, _ factory.ProviderSettings, _ flagger.Flagger, _ licensing.Licensing, _ telemetrystore.TelemetryStore, _ retention.Getter, _ organization.Getter, _ zeus.Zeus) (factory.NamedMap[factory.ProviderFactory[meterreporter.Reporter, meterreporter.Config]], string) {
+			return signoz.NewMeterReporterProviderFactories(), "noop"
 		},
 		func(ps factory.ProviderSettings, q querier.Querier, a analytics.Analytics) querier.Handler {
 			communityHandler := querier.NewHandler(ps, q, a)
 			return eequerier.NewHandler(ps, q, communityHandler)
 		},
-		func(sqlStore sqlstore.SQLStore, dashboardModule dashboard.Module, global global.Global, zeus zeus.Zeus, gateway gateway.Gateway, licensing licensing.Licensing, serviceAccount serviceaccount.Module, config cloudintegration.Config) (cloudintegration.Module, error) {
-			defStore := pkgcloudintegration.NewServiceDefinitionStore()
-			awsCloudProviderModule, err := implcloudprovider.NewAWSCloudProvider(defStore)
-			if err != nil {
-				return nil, err
-			}
-			azureCloudProviderModule := implcloudprovider.NewAzureCloudProvider(defStore)
-			cloudProvidersMap := map[cloudintegrationtypes.CloudProviderType]cloudintegration.CloudProviderModule{
-				cloudintegrationtypes.CloudProviderTypeAWS:   awsCloudProviderModule,
-				cloudintegrationtypes.CloudProviderTypeAzure: azureCloudProviderModule,
-			}
-
-			return implcloudintegration.NewModule(pkgcloudintegration.NewStore(sqlStore), dashboardModule, global, zeus, gateway, licensing, serviceAccount, cloudProvidersMap, config)
+		func(_ sqlstore.SQLStore, _ dashboard.Module, _ global.Global, _ zeus.Zeus, _ gateway.Gateway, _ licensing.Licensing, _ serviceaccount.Module, _ cloudintegration.Config) (cloudintegration.Module, error) {
+			return pkgcloudintegration.NewModule(), nil
 		},
 		func(c cache.Cache, am alertmanager.Alertmanager, ss sqlstore.SQLStore, ts telemetrystore.TelemetryStore, ms telemetrytypes.MetadataStore, p prometheus.Prometheus, og organization.Getter, rsh rulestatehistory.Module, q querier.Querier, qp queryparser.QueryParser) factory.NamedMap[factory.ProviderFactory[ruler.Ruler, ruler.Config]] {
 			return factory.MustNewNamedMap(signozruler.NewFactory(c, am, ss, ts, ms, p, og, rsh, q, qp, eerules.PrepareTaskFunc, eerules.TestNotification))
